@@ -20,6 +20,7 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -56,6 +57,16 @@ public class ChatController {
 
     @Autowired
     private AgentGuardProperties guardProperties;
+
+    /**
+     * 大模型名称。留空则用框架默认模型。
+     *
+     * <p>此前 application.yml 里的 {@code rag.model} 是个摆设 —— 代码写死了
+     * {@code DashScopeChatModel.DEFAULT_MODEL_NAME}，配置改了也不生效。
+     * 现在配置真正生效，留空时行为与之前一致。
+     */
+    @Value("${rag.model:}")
+    private String configuredModelName;
 
     /**
      * 有界线程池（原来是 Executors.newCachedThreadPool()：线程无上限、队列无上限、从不关闭）。
@@ -346,7 +357,7 @@ public class ChatController {
             DashScopeChatModel chatModel = DashScopeChatModel.builder()
                     .dashScopeApi(dashScopeApi)
                     .defaultOptions(DashScopeChatOptions.builder()
-                            .withModel(DashScopeChatModel.DEFAULT_MODEL_NAME)
+                            .withModel(resolveModelName())
                             .withTemperature(0.3)
                             .withMaxToken(8000)
                             .withTopP(0.9)
@@ -412,6 +423,13 @@ public class ChatController {
             }
             emitter.complete();
         }
+    }
+
+    /** 解析生效的模型名：配置了就用配置的，没配就用框架默认 */
+    private String resolveModelName() {
+        return (configuredModelName == null || configuredModelName.isBlank())
+                ? DashScopeChatModel.DEFAULT_MODEL_NAME
+                : configuredModelName;
     }
 
     /**

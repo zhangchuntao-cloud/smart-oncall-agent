@@ -48,10 +48,25 @@ public class ChatService {
     private String dashScopeApiKey;
 
     /**
+     * 大模型名称。留空则用框架默认模型。
+     *
+     * <p>此前 application.yml 里的 {@code rag.model} 是个摆设 —— 代码写死了
+     * {@code DashScopeChatModel.DEFAULT_MODEL_NAME}，改配置不生效。
+     */
+    @Value("${rag.model:}")
+    private String configuredModelName;
+
+    /** 解析生效的模型名：配置了就用配置的，没配就用框架默认 */
+    private String resolveModelName() {
+        return (configuredModelName == null || configuredModelName.isBlank())
+                ? DashScopeChatModel.DEFAULT_MODEL_NAME
+                : configuredModelName;
+    }
+
+    /**
      * 创建 DashScope API 实例
      */
-    public DashScopeApi createDashScopeApi() {
-        return DashScopeApi.builder()
+    public DashScopeApi createDashScopeApi() {        return DashScopeApi.builder()
                 .apiKey(dashScopeApiKey)
                 .build();
     }
@@ -66,7 +81,7 @@ public class ChatService {
         return DashScopeChatModel.builder()
                 .dashScopeApi(dashScopeApi)
                 .defaultOptions(DashScopeChatOptions.builder()
-                        .withModel(DashScopeChatModel.DEFAULT_MODEL_NAME)
+                        .withModel(resolveModelName())
                         .withTemperature(temperature)
                         .withMaxToken(maxToken)
                         .withTopP(topP)

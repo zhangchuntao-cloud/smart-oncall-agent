@@ -74,7 +74,9 @@ document:
 # RAG 配置
 rag:
   top-k: 3  # 检索返回的最相似文档数量
-  model: "qwen3-max"  # 大语言模型名称
+  # 大模型名称。留空则使用框架默认模型（DashScopeChatModel.DEFAULT_MODEL_NAME）。
+  # 此前这里写死 qwen3-max 但代码根本不读它 —— 配置与实现不符，容易误导。
+  model: ""
 
 # Prometheus 配置
 prometheus:
