@@ -5,6 +5,7 @@ import io.milvus.grpc.ShowCollectionsResponse;
 import io.milvus.param.R;
 import io.milvus.param.collection.ShowCollectionsParam;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -19,6 +20,7 @@ import java.util.Map;
 @RequestMapping("/milvus")
 public class MilvusCheckController {
 
+    @Lazy
     @Autowired
     private MilvusServiceClient milvusClient;
 
