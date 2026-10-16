@@ -11,8 +11,8 @@
         <relativePath/>
     </parent>
 
-    <groupId>org.example</groupId>
-    <artifactId>super-biz-agent</artifactId>
+    <groupId>com.smartoncall</groupId>
+    <artifactId>smart-oncall-agent</artifactId>
     <version>1.0-SNAPSHOT</version>
 
     <properties>
@@ -160,7 +160,7 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
-                    <mainClass>org.example.Main</mainClass>
+                    <mainClass>com.smartoncall.Main</mainClass>
                 </configuration>
             </plugin>
             
