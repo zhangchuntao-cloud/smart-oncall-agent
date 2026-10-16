@@ -90,14 +90,20 @@ cls:
 #
 # 这些约束原本只写在提示词里（"连续 3 次失败就停止"），靠模型自觉遵守 —— 那等于没有约束。
 # 现在由代码强制：超限会终止运行并如实告知用户，而不是继续烧配额。
+#
+# 默认值依据实测校准（同一任务连跑两次，LLM 探索路径不同导致消耗差异很大）：
+#   正常完成的一次：9 次调用 / 23k token / 35s
+#   绕弯路的一次：  14 次调用 / 64k token / 109s 仍未完成
+# 所以预算要留出数倍余量，避免误杀"走得慢但能完成"的运行；
+# 同时又不能没有上限 —— 否则一次失控循环就能烧掉整月配额。
 agent:
   guard:
     max-iterations: 12        # Supervisor 图最大递归步数（框架层硬限制）
-    max-model-calls: 25       # 单次运行 LLM 调用次数上限
-    max-total-tokens: 60000   # 单次运行 token 预算（输入+输出累计）
-    max-tool-calls: 40        # 单次运行工具调用次数上限
+    max-model-calls: 30       # 单次运行 LLM 调用次数上限（实测正常 9 次，留 3 倍余量）
+    max-total-tokens: 120000  # 单次运行 token 预算（实测正常 23k，留 5 倍余量）
+    max-tool-calls: 40        # 单次运行工具调用次数上限（实测正常 7 次）
     max-same-tool-repeats: 3  # 同一工具+同参数重复调用几次后拦截（不终止，只提示模型换方向）
-    timeout-seconds: 180      # 单次运行墙钟上限（协作式检查，见 AiOpsService 注释）
+    timeout-seconds: 300      # 单次运行墙钟上限（实测正常 35s，绕弯路 109s）
     max-concurrent-runs: 4    # 同时运行的 AIOps 任务上限，超出直接拒绝而非排队
     worker-threads: 8         # 请求侧线程池大小
     worker-queue-capacity: 16 # 线程池队列容量
