@@ -21,9 +21,13 @@ milvus:
 
 # Spring AI Alibaba DashScope 配置
 spring:
+  # 从 .env 读取本地密钥。.env 已在 .gitignore 中；
+  # optional: 前缀保证文件不存在时静默跳过，不影响启动（别人 clone 下来也能跑）
+  config:
+    import: optional:file:.env[.properties]
   ai:
     dashscope:
-      api-key: ${DASHSCOPE_API_KEY:your-api-key-here}  # 从环境变量读取或使用默认值
+      api-key: ${DASHSCOPE_API_KEY:}
       chat:
         options:
           timeout: 180000  # 超时时间180秒（3分钟）
@@ -39,6 +43,11 @@ spring:
     mcp:
       client:
         enabled: true
+        # 关键：不要在启动时急切建立连接。
+        # MCP server（cls-mcp-server）是本地另起的进程，它没运行时，
+        # eager 初始化会让整个 Spring 上下文启动失败——日志查询只是可选的工具能力，
+        # 不该有否决整个应用的权力。设为 false 后改为首次使用时才连接。
+        initialized: false
         name: tencent-mcp-server
         version: 1.0.0
         request-timeout: 60s
@@ -46,13 +55,13 @@ spring:
         sse:
           connections:
             tencent-cls:
-              url: https://mcp-api.tencent-cloud.com
-              sse-endpoint: /sse/92XXXXXXXXb4  # 完整的SSE端点路径
+              url: http://localhost:3000
+              sse-endpoint: /sse  # 本地部署的 cls-mcp-server（npx -y cls-mcp-server@latest）
 
 # 阿里云 DashScope Embedding API 配置
 dashscope:
   api:
-    key: ${DASHSCOPE_API_KEY:your-api-key-here}  # 从环境变量读取或使用默认值（用于自定义配置）
+    key: ${DASHSCOPE_API_KEY:}
   embedding:
     model: text-embedding-v4  # 阿里云文本向量化模型
 
@@ -65,7 +74,9 @@ document:
 # RAG 配置
 rag:
   top-k: 3  # 检索返回的最相似文档数量
-  model: "qwen3-max"  # 大语言模型名称
+  # 大模型名称。留空则使用框架默认模型（DashScopeChatModel.DEFAULT_MODEL_NAME）。
+  # 此前这里写死 qwen3-max 但代码根本不读它 —— 配置与实现不符，容易误导。
+  model: ""
 
 # Prometheus 配置
 prometheus:
@@ -76,3 +87,27 @@ prometheus:
 # CLS 云日志服务配置
 cls:
   mock-enabled: false  # 是否启用 Mock 模式（用于测试，设为 true 返回与告警关联的模拟日志数据）
+
+# Agent 资源护栏
+#
+# 这些约束原本只写在提示词里（"连续 3 次失败就停止"），靠模型自觉遵守 —— 那等于没有约束。
+# 现在由代码强制：超限会终止运行并如实告知用户，而不是继续烧配额。
+#
+# 默认值依据实测校准（同一任务连跑两次，LLM 探索路径不同导致消耗差异很大）：
+#   正常完成的一次：9 次调用 / 23k token / 35s
+#   绕弯路的一次：  14 次调用 / 64k token / 109s 仍未完成
+# 所以预算要留出数倍余量，避免误杀"走得慢但能完成"的运行；
+# 同时又不能没有上限 —— 否则一次失控循环就能烧掉整月配额。
+agent:
+  guard:
+    max-iterations: 12        # Supervisor 图最大递归步数（框架层硬限制）
+    max-model-calls: 30       # 单次运行 LLM 调用次数上限（实测正常 9 次，留 3 倍余量）
+    max-total-tokens: 120000  # 单次运行 token 预算（实测正常 23k，留 5 倍余量）
+    max-tool-calls: 40        # 单次运行工具调用次数上限（实测正常 7 次）
+    max-same-tool-repeats: 3  # 同一工具+同参数重复调用几次后拦截（不终止，只提示模型换方向）
+    max-tool-result-chars: 3000 # 单个工具结果最大字符数，超出保留首尾、省略中间
+                                # （Agent 每轮都重发完整上下文，超长结果会在后续每次调用重复计费）
+    timeout-seconds: 300      # 单次运行墙钟上限（实测正常 35s，绕弯路 109s）
+    max-concurrent-runs: 4    # 同时运行的 AIOps 任务上限，超出直接拒绝而非排队
+    worker-threads: 8         # 请求侧线程池大小
+    worker-queue-capacity: 16 # 线程池队列容量

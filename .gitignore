@@ -22,3 +22,35 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# 本地密钥，勿提交
+.env
+.tmp-images/
+
+# ============ 以下为项目特定忽略项 ============
+# 原 .gitignore 只有 JetBrains 的 Java 模板，下面这些只是"碰巧"没被提交，
+# 而不是被显式挡住了 —— 一旦有人 git add -A 就会扫进去（确实发生过一次：
+# 304MB 的 Milvus 运行数据、构建产物、IDE 配置一起进了暂存区）。
+
+# 构建产物
+target/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 运行期文件
+*.pid
+server.log
+mcp-server.log
+
+# Milvus 容器数据卷（etcd 快照 / WAL / SST，动辄数百 MB，绝不该进仓库）
+volumes/
+
+# 用户上传的文件
+uploads/
+
+# 本地草稿与个人文件，不入库
+bug_report.txt
+questions_for_interview.docx
