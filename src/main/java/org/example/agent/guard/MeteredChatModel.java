@@ -99,6 +99,13 @@ public class MeteredChatModel implements ChatModel {
                             ? "unknown" : response.getMetadata().getModel());
             return;
         }
+        // 逐次记录输入/输出分量，用于定位成本大头。
+        // 只看累计值无法回答"是 system prompt 太胖，还是历史累积太快"，
+        // 而这两个问题的解法完全不同。
+        logger.info("[token] 本次输入={} 输出={} 累计={}/{}",
+                usage.getPromptTokens(), usage.getCompletionTokens(),
+                budget.snapshot().totalTokens() + usage.getTotalTokens(),
+                budget.limitOfTotalTokens());
         budget.recordUsage(usage);
     }
 

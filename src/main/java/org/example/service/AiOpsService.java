@@ -10,6 +10,7 @@ import org.example.agent.guard.AgentBudgetExceededException;
 import org.example.agent.guard.AgentGuardProperties;
 import org.example.agent.guard.LoopGuardToolInterceptor;
 import org.example.agent.guard.MeteredChatModel;
+import org.example.agent.guard.ToolResultTruncatingInterceptor;
 import org.example.agent.tool.DateTimeTools;
 import org.example.agent.tool.InternalDocsTools;
 import org.example.agent.tool.QueryLogsTools;
@@ -198,7 +199,8 @@ public class AiOpsService {
                 .methodTools(buildMethodToolsArray())
                 .tools(toolCallbacks)
                 .outputKey("planner_plan")
-                .interceptors(new LoopGuardToolInterceptor(budget))
+                .interceptors(new LoopGuardToolInterceptor(budget),
+                        new ToolResultTruncatingInterceptor(guardProperties.getMaxToolResultChars()))
                 .compileConfig(compileConfig)
                 .executor(agentInternalExecutor)
                 .build();
@@ -217,7 +219,8 @@ public class AiOpsService {
                 .methodTools(buildMethodToolsArray())
                 .tools(toolCallbacks)
                 .outputKey("executor_feedback")
-                .interceptors(new LoopGuardToolInterceptor(budget))
+                .interceptors(new LoopGuardToolInterceptor(budget),
+                        new ToolResultTruncatingInterceptor(guardProperties.getMaxToolResultChars()))
                 .compileConfig(compileConfig)
                 .executor(agentInternalExecutor)
                 .build();

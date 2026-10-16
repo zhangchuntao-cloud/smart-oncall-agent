@@ -103,6 +103,8 @@ agent:
     max-total-tokens: 120000  # 单次运行 token 预算（实测正常 23k，留 5 倍余量）
     max-tool-calls: 40        # 单次运行工具调用次数上限（实测正常 7 次）
     max-same-tool-repeats: 3  # 同一工具+同参数重复调用几次后拦截（不终止，只提示模型换方向）
+    max-tool-result-chars: 3000 # 单个工具结果最大字符数，超出保留首尾、省略中间
+                                # （Agent 每轮都重发完整上下文，超长结果会在后续每次调用重复计费）
     timeout-seconds: 300      # 单次运行墙钟上限（实测正常 35s，绕弯路 109s）
     max-concurrent-runs: 4    # 同时运行的 AIOps 任务上限，超出直接拒绝而非排队
     worker-threads: 8         # 请求侧线程池大小

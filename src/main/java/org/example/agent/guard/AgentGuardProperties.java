@@ -26,6 +26,14 @@ public class AgentGuardProperties {
     /** 同一工具+同一参数重复调用多少次后开始拦截（返回提示让模型转向，不终止运行） */
     private int maxSameToolRepeats = 3;
 
+    /**
+     * 单个工具结果的最大字符数，超出则保留首尾、省略中间。
+     *
+     * <p>这是成本优化的关键杠杆：Agent 循环每一轮都会重发完整上下文，
+     * 一份超长的日志结果会在后续每一次调用里重复计费。
+     */
+    private int maxToolResultChars = 3000;
+
     /** 单次运行的墙钟超时（秒）。到点强制取消，不再继续烧 token */
     private int timeoutSeconds = 180;
 
@@ -76,6 +84,14 @@ public class AgentGuardProperties {
 
     public void setMaxSameToolRepeats(int maxSameToolRepeats) {
         this.maxSameToolRepeats = maxSameToolRepeats;
+    }
+
+    public int getMaxToolResultChars() {
+        return maxToolResultChars;
+    }
+
+    public void setMaxToolResultChars(int maxToolResultChars) {
+        this.maxToolResultChars = maxToolResultChars;
     }
 
     public int getTimeoutSeconds() {

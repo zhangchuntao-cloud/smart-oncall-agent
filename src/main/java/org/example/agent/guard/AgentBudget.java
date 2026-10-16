@@ -122,6 +122,11 @@ public class AgentBudget {
         return TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - startedAtNanos);
     }
 
+    /** token 预算上限，供日志展示进度 */
+    public int limitOfTotalTokens() {
+        return limits.getMaxTotalTokens();
+    }
+
     /** 主动终止（例如外层墙钟超时触发） */
     public void markTerminated(String reason) {
         if (terminationReason == null) {
