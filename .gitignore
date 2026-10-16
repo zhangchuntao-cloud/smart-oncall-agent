@@ -58,3 +58,4 @@ questions_for_interview.docx
 # 面试题临时转换文件
 .interview-questions.tmp.txt
 questions_for_interview_v2.md
+CHANGELOG-agent-hardening.md
