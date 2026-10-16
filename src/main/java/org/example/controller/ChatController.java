@@ -10,6 +10,8 @@ import com.alibaba.cloud.ai.graph.streaming.OutputType;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import lombok.Getter;
 import lombok.Setter;
+import org.example.agent.guard.AgentGuardProperties;
+import org.example.service.AiOpsRunResult;
 import org.example.service.AiOpsService;
 import org.example.service.ChatService;
 import org.slf4j.Logger;
@@ -17,17 +19,20 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
 
+import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -49,7 +54,27 @@ public class ChatController {
     @Autowired
     private ToolCallbackProvider tools;
 
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    @Autowired
+    private AgentGuardProperties guardProperties;
+
+    /**
+     * 有界线程池（原来是 Executors.newCachedThreadPool()：线程无上限、队列无上限、从不关闭）。
+     * 由 {@link org.example.config.AgentExecutorConfig} 提供，应用关闭时自动 shutdown。
+     */
+    @Autowired
+    @Qualifier("agentRequestExecutor")
+    private ExecutorService executor;
+
+    /**
+     * AIOps 并发闸门。超出上限直接拒绝而不是排队——排队的请求最终会因为超时集体失败，
+     * 还白占内存。快速失败 + 明确提示对用户更友好。
+     */
+    private Semaphore aiOpsSlots;
+
+    @PostConstruct
+    void initAiOpsSlots() {
+        this.aiOpsSlots = new Semaphore(guardProperties.getMaxConcurrentRuns());
+    }
 
     // 存储会话信息
     private final Map<String, SessionInfo> sessions = new ConcurrentHashMap<>();
@@ -280,96 +305,143 @@ public class ChatController {
     /**
      * AI 智能运维接口（SSE 流式模式）- 自动分析告警并生成运维报告
      * 无需用户输入，自动执行告警分析流程
+     *
+     * <p>并发受 {@code agent.guard.max-concurrent-runs} 限制：超出直接拒绝，不排队。
+     * 真正的运行时长上限由 {@code agent.guard.timeout-seconds} 在 Agent 内部协作式控制，
+     * 这里的 10 分钟只是给客户端的兜底。
      */
     @PostMapping(value = "/ai_ops", produces = "text/event-stream;charset=UTF-8")
     public SseEmitter aiOps() {
-        SseEmitter emitter = new SseEmitter(600000L); // 10分钟超时（告警分析可能较慢）
+        SseEmitter emitter = new SseEmitter(600000L);
 
-        executor.execute(() -> {
-            try {
-                logger.info("收到 AI 智能运维请求 - 启动多 Agent 协作流程");
+        if (!aiOpsSlots.tryAcquire()) {
+            logger.warn("AIOps 并发已达上限 {}，拒绝本次请求", guardProperties.getMaxConcurrentRuns());
+            sendBusy(emitter, "当前分析任务已满（上限 " + guardProperties.getMaxConcurrentRuns()
+                    + " 个），请稍后再试");
+            return emitter;
+        }
 
-                DashScopeApi dashScopeApi = chatService.createDashScopeApi();
-                DashScopeChatModel chatModel = DashScopeChatModel.builder()
-                        .dashScopeApi(dashScopeApi)
-                        .defaultOptions(DashScopeChatOptions.builder()
-                                .withModel(DashScopeChatModel.DEFAULT_MODEL_NAME)
-                                .withTemperature(0.3)
-                                .withMaxToken(8000)
-                                .withTopP(0.9)
-                                .build())
-                        .build();
-
-                ToolCallback[] toolCallbacks = tools.getToolCallbacks();
-
-                emitter.send(SseEmitter.event().name("message").data(SseMessage.content("正在读取告警并拆解任务...\n")));
-                
-                // 调用 AiOpsService 执行分析流程
-                Optional<OverAllState> overAllStateOptional = aiOpsService.executeAiOpsAnalysis(chatModel, toolCallbacks);
-
-                if (overAllStateOptional.isEmpty()) {
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.error("多 Agent 编排未获取到有效结果"), MediaType.APPLICATION_JSON));
-                    emitter.complete();
-                    return;
-                }
-
-                OverAllState state = overAllStateOptional.get();
-                logger.info("AI Ops 编排完成，开始提取最终报告...");
-
-                // 提取最终报告
-                Optional<String> finalReportOptional = aiOpsService.extractFinalReport(state);
-
-                // 输出最终报告
-                if (finalReportOptional.isPresent()) {
-                    String finalReportText = finalReportOptional.get();
-                    logger.info("提取到 Planner 最终报告，长度: {}", finalReportText.length());
-                    
-                    // 发送分隔线
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.content("\n\n" + "=".repeat(60) + "\n"), MediaType.APPLICATION_JSON));
-                    
-                    // 发送完整的告警分析报告
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.content("📋 **告警分析报告**\n\n"), MediaType.APPLICATION_JSON));
-                    
-                    int chunkSize = 50;
-                    for (int i = 0; i < finalReportText.length(); i += chunkSize) {
-                        int end = Math.min(i + chunkSize, finalReportText.length());
-                        String chunk = finalReportText.substring(i, end);
-                        
-                        emitter.send(SseEmitter.event().name("message")
-                                .data(SseMessage.content(chunk), MediaType.APPLICATION_JSON));
-                    }
-                    
-                    // 发送结束分隔线
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.content("\n" + "=".repeat(60) + "\n\n"), MediaType.APPLICATION_JSON));
-                    
-                    logger.info("最终报告已完整输出");
-                } else {
-                    logger.warn("未能提取到 Planner 最终报告");
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.content("⚠️ 多 Agent 流程已完成，但未能生成最终报告。"), MediaType.APPLICATION_JSON));
-                }
-
-                emitter.send(SseEmitter.event().name("message").data(SseMessage.done(), MediaType.APPLICATION_JSON));
-                emitter.complete();
-                logger.info("AI Ops 多 Agent 编排完成");
-
-            } catch (Exception e) {
-                logger.error("AI Ops 多 Agent 协作失败", e);
+        try {
+            executor.execute(() -> {
                 try {
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.error("AI Ops 流程失败: " + e.getMessage()), MediaType.APPLICATION_JSON));
-                } catch (IOException ex) {
-                    logger.error("发送错误消息失败", ex);
+                    runAiOps(emitter);
+                } finally {
+                    aiOpsSlots.release();
                 }
-                emitter.completeWithError(e);
-            }
-        });
+            });
+        } catch (RejectedExecutionException e) {
+            aiOpsSlots.release();
+            logger.warn("AIOps 线程池已满，拒绝本次请求", e);
+            sendBusy(emitter, "服务繁忙，请稍后再试");
+        }
 
         return emitter;
+    }
+
+    private void runAiOps(SseEmitter emitter) {
+        try {
+            logger.info("收到 AI 智能运维请求 - 启动多 Agent 协作流程");
+
+            DashScopeApi dashScopeApi = chatService.createDashScopeApi();
+            DashScopeChatModel chatModel = DashScopeChatModel.builder()
+                    .dashScopeApi(dashScopeApi)
+                    .defaultOptions(DashScopeChatOptions.builder()
+                            .withModel(DashScopeChatModel.DEFAULT_MODEL_NAME)
+                            .withTemperature(0.3)
+                            .withMaxToken(8000)
+                            .withTopP(0.9)
+                            .build())
+                    .build();
+
+            ToolCallback[] toolCallbacks = resolveToolCallbacks();
+
+            emitter.send(SseEmitter.event().name("message")
+                    .data(SseMessage.content("正在读取告警并拆解任务...\n"), MediaType.APPLICATION_JSON));
+
+            AiOpsRunResult result = aiOpsService.executeAiOpsAnalysis(chatModel, toolCallbacks);
+
+            if (result.degraded()) {
+                // 如实告知被护栏拦下的原因，而不是假装成功
+                logger.warn("AI Ops 运行降级结束: {}", result.degradationReason());
+                emitter.send(SseEmitter.event().name("message")
+                        .data(SseMessage.content("⚠️ " + result.degradationReason() + "\n"),
+                                MediaType.APPLICATION_JSON));
+                emitter.send(SseEmitter.event().name("message")
+                        .data(SseMessage.content("本次运行消耗：" + result.budget() + "\n"),
+                                MediaType.APPLICATION_JSON));
+            } else {
+                String finalReportText = result.report().orElse("");
+                logger.info("提取到 Planner 最终报告，长度: {}", finalReportText.length());
+
+                emitter.send(SseEmitter.event().name("message")
+                        .data(SseMessage.content("\n\n" + "=".repeat(60) + "\n"), MediaType.APPLICATION_JSON));
+                emitter.send(SseEmitter.event().name("message")
+                        .data(SseMessage.content("📋 **告警分析报告**\n\n"), MediaType.APPLICATION_JSON));
+
+                int chunkSize = 50;
+                for (int i = 0; i < finalReportText.length(); i += chunkSize) {
+                    int end = Math.min(i + chunkSize, finalReportText.length());
+                    emitter.send(SseEmitter.event().name("message")
+                            .data(SseMessage.content(finalReportText.substring(i, end)),
+                                    MediaType.APPLICATION_JSON));
+                }
+
+                emitter.send(SseEmitter.event().name("message")
+                        .data(SseMessage.content("\n" + "=".repeat(60) + "\n"), MediaType.APPLICATION_JSON));
+                emitter.send(SseEmitter.event().name("message")
+                        .data(SseMessage.content("本次运行消耗：" + result.budget() + "\n"),
+                                MediaType.APPLICATION_JSON));
+
+                logger.info("最终报告已完整输出");
+            }
+
+            emitter.send(SseEmitter.event().name("message").data(SseMessage.done(), MediaType.APPLICATION_JSON));
+            emitter.complete();
+            logger.info("AI Ops 多 Agent 编排完成");
+
+        } catch (Exception e) {
+            // 只记服务端日志，不把 e.getMessage() 透给客户端 ——
+            // 内部异常信息可能包含堆栈片段、下游 URL、甚至密钥前缀
+            logger.error("AI Ops 多 Agent 协作失败", e);
+            try {
+                emitter.send(SseEmitter.event().name("message")
+                        .data(SseMessage.error("AI Ops 流程失败，请稍后重试；详情请查看服务端日志"),
+                                MediaType.APPLICATION_JSON));
+            } catch (IOException ex) {
+                logger.error("发送错误消息失败", ex);
+            }
+            emitter.complete();
+        }
+    }
+
+    /**
+     * 解析 MCP 工具回调，失败时降级为空数组。
+     *
+     * <p>MCP server（cls-mcp-server）是本地另起的进程。它没运行时，
+     * {@code getToolCallbacks()} 会抛 {@code Client failed to initialize listing tools}，
+     * 把整次 AIOps 运行带崩——而日志查询只是若干工具中的一个，
+     * <b>不该有否决整次分析的权力</b>。这里降级为"只用内置工具"（时间、内部文档、Prometheus 指标），
+     * 让分析仍能产出结论。
+     */
+    private ToolCallback[] resolveToolCallbacks() {
+        try {
+            return tools.getToolCallbacks();
+        } catch (Exception e) {
+            logger.warn("MCP 工具不可用，本次运行降级为仅使用内置工具。原因: {}", e.getMessage());
+            return new ToolCallback[0];
+        }
+    }
+
+    /** 并发已满或线程池拒绝时的友好响应 */
+    private void sendBusy(SseEmitter emitter, String message) {
+        try {
+            emitter.send(SseEmitter.event().name("message")
+                    .data(SseMessage.error(message), MediaType.APPLICATION_JSON));
+            emitter.complete();
+        } catch (IOException e) {
+            logger.error("发送繁忙提示失败", e);
+            emitter.completeWithError(e);
+        }
     }
 
 
