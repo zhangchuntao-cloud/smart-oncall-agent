@@ -1,6 +1,6 @@
-# SuperBizAgent
+# SmartOnCall Agent
 
-> 基于 Spring Boot + AI Agent 的智能问答与运维系统
+> 基于 Spring Boot + Spring AI Alibaba 的智能问答与运维系统
 
 ## 📖 项目简介
 
