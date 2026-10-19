@@ -39,6 +39,22 @@ public class QueryMetricsTools {
     
     @Value("${prometheus.mock-enabled:false}")
     private boolean mockEnabled;
+
+    /**
+     * 告警来源：{@code prometheus} 或 {@code builtin}。
+     *
+     * <p>默认 {@code builtin}——本地环境通常没有 Prometheus，用内置告警源
+     * 才能让 AIOps 拿到真实输入（见 {@code AlertSource} 的类注释）。
+     * 生产环境切到 {@code prometheus} 即可，下游无需改动。
+     */
+    @Value("${prometheus.source:builtin}")
+    private String alertSourceType;
+
+    private final com.smartoncall.alert.AlertSource builtinAlertSource;
+
+    public QueryMetricsTools(com.smartoncall.alert.AlertSource builtinAlertSource) {
+        this.builtinAlertSource = builtinAlertSource;
+    }
     
     private OkHttpClient httpClient;
     
@@ -55,49 +71,53 @@ public class QueryMetricsTools {
      * 查询 Prometheus 活动告警
      * 该工具从 Prometheus 告警系统检索所有当前活动/触发的告警，包括标签、注释、状态和值
      */
-    @Tool(description = "Query active alerts from Prometheus alerting system. " +
-            "This tool retrieves all currently active/firing alerts including their labels, annotations, state, and values. " +
+    @Tool(description = "Query active alerts from the alerting system. " +
+            "This tool retrieves all currently active/firing alerts including their name, level, service, description, state, and values. " +
             "Use this tool when you need to check what alerts are currently firing, investigate alert conditions, or monitor alert status.")
     public String queryPrometheusAlerts() {
-        logger.info("开始查询 Prometheus 活动告警, Mock模式: {}", mockEnabled);
-        
+        logger.info("开始查询活动告警, 来源: {}, Mock模式: {}", alertSourceType, mockEnabled);
+
         try {
             List<SimplifiedAlert> simplifiedAlerts;
-            
+
             if (mockEnabled) {
                 // Mock 模式：返回与文档关联的模拟告警数据
                 simplifiedAlerts = buildMockAlerts();
                 logger.info("使用 Mock 数据，返回 {} 个模拟告警", simplifiedAlerts.size());
+            } else if ("builtin".equalsIgnoreCase(alertSourceType)) {
+                // 内置告警源：数据真实存在于本系统，可注入 / 可解除
+                simplifiedAlerts = fromBuiltinSource();
+                logger.info("使用内置告警源，返回 {} 条活跃告警", simplifiedAlerts.size());
             } else {
                 // 真实模式：调用 Prometheus Alerts API
                 PrometheusAlertsResult result = fetchPrometheusAlerts();
-                
+
                 if (!"success".equals(result.getStatus())) {
                     return buildErrorResponse("Prometheus API 返回非成功状态: " + result.getStatus(), result.getError());
                 }
-                
+
                 // 转换为简化格式，对于相同的 alertname，只保留第一个
                 Set<String> seenAlertNames = new HashSet<>();
                 simplifiedAlerts = new ArrayList<>();
-                
+
                 for (PrometheusAlert alert : result.getData().getAlerts()) {
                     String alertName = alert.getLabels().get("alertname");
-                    
+
                     // 如果这个 alertname 已经存在，跳过
                     if (seenAlertNames.contains(alertName)) {
                         continue;
                     }
-                    
+
                     // 标记为已见过
                     seenAlertNames.add(alertName);
-                    
+
                     SimplifiedAlert simplified = new SimplifiedAlert();
                     simplified.setAlertName(alertName);
                     simplified.setDescription(alert.getAnnotations().getOrDefault("description", ""));
                     simplified.setState(alert.getState());
                     simplified.setActiveAt(alert.getActiveAt());
                     simplified.setDuration(calculateDuration(alert.getActiveAt()));
-                    
+
                     simplifiedAlerts.add(simplified);
                 }
             }
@@ -119,6 +139,28 @@ public class QueryMetricsTools {
         }
     }
     
+    /**
+     * 把内置告警源的数据转换成与 Prometheus 一致的简化格式。
+     *
+     * <p>这样下游（Agent 提示词、报告生成）完全不需要区分告警来自哪里。
+     */
+    private List<SimplifiedAlert> fromBuiltinSource() {
+        List<SimplifiedAlert> alerts = new ArrayList<>();
+        for (com.smartoncall.alert.AlertSource.Alert source : builtinAlertSource.query(null)) {
+            SimplifiedAlert simplified = new SimplifiedAlert();
+            simplified.setAlertName(source.getAlertName());
+            simplified.setDescription(source.getDescription()
+                    + " [service=" + source.getService()
+                    + ", level=" + source.getLevel()
+                    + ", value=" + source.getValue() + "]");
+            simplified.setState(source.getState());
+            simplified.setActiveAt(String.valueOf(source.getActiveAt()));
+            simplified.setDuration(source.getDuration());
+            alerts.add(simplified);
+        }
+        return alerts;
+    }
+
     /**
      * 构建 Mock 告警数据
      * 与 aiops-docs 文档中的告警类型对应：

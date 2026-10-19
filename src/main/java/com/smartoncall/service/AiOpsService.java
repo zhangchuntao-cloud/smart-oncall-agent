@@ -15,6 +15,7 @@ import com.smartoncall.agent.tool.DateTimeTools;
 import com.smartoncall.agent.tool.InternalDocsTools;
 import com.smartoncall.agent.tool.QueryLogsTools;
 import com.smartoncall.agent.tool.QueryMetricsTools;
+import com.smartoncall.dto.AIOpsRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -75,6 +76,17 @@ public class AiOpsService {
      * @return 运行结果，含报告与资源画像；被护栏终止时 {@code degradationReason} 非空
      */
     public AiOpsRunResult executeAiOpsAnalysis(DashScopeChatModel chatModel, ToolCallback[] toolCallbacks) {
+        return executeAiOpsAnalysis(chatModel, toolCallbacks, null);
+    }
+
+    /**
+     * 带请求参数执行。
+     *
+     * @param request 可选的分析范围（告警名 / 服务 / 时间窗 / 额外诉求）。
+     *                为 null 时分析全部活跃告警，与旧行为一致。
+     */
+    public AiOpsRunResult executeAiOpsAnalysis(DashScopeChatModel chatModel, ToolCallback[] toolCallbacks,
+                                               AIOpsRequest request) {
         AgentBudget budget = new AgentBudget(guardProperties);
         logger.info("开始执行 AI Ops 多 Agent 协作流程，预算上限: 迭代 {} 步 / LLM {} 次 / token {} / 耗时 {}s",
                 guardProperties.getMaxIterations(),
@@ -102,9 +114,47 @@ public class AiOpsService {
                 .executor(agentInternalExecutor)
                 .build();
 
-        String taskPrompt = "你是企业级 SRE，接到了自动化告警排查任务。请结合工具调用，执行**规划→执行→再规划**的闭环，并最终按照固定模板输出《告警分析报告》。禁止编造虚假数据，如连续多次查询失败需诚实反馈无法完成的原因。";
+        String taskPrompt = buildTaskPrompt(request);
 
         return runWithGuard(supervisorAgent, taskPrompt, budget);
+    }
+
+    /**
+     * 根据请求参数构建任务提示词。
+     *
+     * <p>原实现是一段硬编码的固定文案，无法指定要排查哪条告警、哪个服务、多长时间窗。
+     * 现在把这些做成可选项拼进去；不传时保持原行为。
+     */
+    private String buildTaskPrompt(AIOpsRequest request) {
+        StringBuilder prompt = new StringBuilder(
+                "你是企业级 SRE，接到了自动化告警排查任务。请结合工具调用，执行**规划→执行→再规划**的闭环，"
+                        + "并最终按照固定模板输出《告警分析报告》。禁止编造虚假数据，如连续多次查询失败需诚实反馈无法完成的原因。");
+
+        if (request == null) {
+            return prompt.toString();
+        }
+
+        if (isPresent(request.getAlertName())) {
+            prompt.append("\n\n【本次排查范围】只分析告警：").append(request.getAlertName())
+                    .append("。查询告警时请围绕这条告警展开，不要偏离到其他告警。");
+        }
+        if (isPresent(request.getService())) {
+            prompt.append("\n【目标服务】").append(request.getService())
+                    .append("。查询日志与指标时请聚焦该服务。");
+        }
+        if (isPresent(request.getTimeRange())) {
+            prompt.append("\n【时间窗】最近 ").append(request.getTimeRange())
+                    .append("。调用日志/指标工具时按此范围传参。");
+        }
+        if (isPresent(request.getUserRequest())) {
+            prompt.append("\n【额外诉求】").append(request.getUserRequest());
+        }
+
+        return prompt.toString();
+    }
+
+    private boolean isPresent(String value) {
+        return value != null && !value.isBlank();
     }
 
     /**

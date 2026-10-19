@@ -11,6 +11,7 @@ import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import lombok.Getter;
 import lombok.Setter;
 import com.smartoncall.agent.guard.AgentGuardProperties;
+import com.smartoncall.dto.AIOpsRequest;
 import com.smartoncall.service.AiOpsRunResult;
 import com.smartoncall.service.AiOpsService;
 import com.smartoncall.service.ChatService;
@@ -322,7 +323,7 @@ public class ChatController {
      * 这里的 10 分钟只是给客户端的兜底。
      */
     @PostMapping(value = "/ai_ops", produces = "text/event-stream;charset=UTF-8")
-    public SseEmitter aiOps() {
+    public SseEmitter aiOps(@RequestBody(required = false) AIOpsRequest request) {
         SseEmitter emitter = new SseEmitter(600000L);
 
         if (!aiOpsSlots.tryAcquire()) {
@@ -335,7 +336,7 @@ public class ChatController {
         try {
             executor.execute(() -> {
                 try {
-                    runAiOps(emitter);
+                    runAiOps(emitter, request);
                 } finally {
                     aiOpsSlots.release();
                 }
@@ -349,7 +350,7 @@ public class ChatController {
         return emitter;
     }
 
-    private void runAiOps(SseEmitter emitter) {
+    private void runAiOps(SseEmitter emitter, AIOpsRequest request) {
         try {
             logger.info("收到 AI 智能运维请求 - 启动多 Agent 协作流程");
 
@@ -369,7 +370,7 @@ public class ChatController {
             emitter.send(SseEmitter.event().name("message")
                     .data(SseMessage.content("正在读取告警并拆解任务...\n"), MediaType.APPLICATION_JSON));
 
-            AiOpsRunResult result = aiOpsService.executeAiOpsAnalysis(chatModel, toolCallbacks);
+            AiOpsRunResult result = aiOpsService.executeAiOpsAnalysis(chatModel, toolCallbacks, request);
 
             if (result.degraded()) {
                 // 如实告知被护栏拦下的原因，而不是假装成功

@@ -37,6 +37,8 @@ public class QueryLogsTools {
     
     @Value("${cls.mock-enabled:false}")
     private boolean mockEnabled;
+
+    private final com.smartoncall.log.LogStore logStore;
     
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter
             .ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -165,8 +167,13 @@ public class QueryLogsTools {
             @ToolParam(description = "返回日志条数，默认20，最大100") Integer limit) {
         
         int actualLimit = (limit == null || limit <= 0) ? 20 : Math.min(limit, 100);
-        
+
         String safeQuery = query == null ? "" : query;
+
+        // 记录模型实际传的参数。排查"为什么查到 0 条"时，这是唯一可靠的依据——
+        // 单纯看"返回 0 条"无法区分是没匹配上、还是参数压根传错了。
+        logger.info("日志查询参数: region={}, logTopic={}, query={}, limit={}",
+                region, logTopic, safeQuery, actualLimit);
         
 
         try {
@@ -177,8 +184,11 @@ public class QueryLogsTools {
                 logEntries = buildMockLogs(region, logTopic, safeQuery, actualLimit);
                 logger.info("使用 Mock 数据，返回 {} 条日志", logEntries.size());
             } else {
-                // 真实模式：调用 CLS API（这里预留接口，后续实现）
-                return buildErrorResponse("CLS 真实查询尚未实现，请启用 mock 模式进行测试");
+                // 本地日志库：数据真实存在、可注入、可过滤。
+                // 原实现这里是个桩（直接返回"CLS 真实查询尚未实现"），
+                // 导致 AIOps 的日志输入完全为空，报告只能靠模型猜。
+                logEntries = fromLocalStore(region, logTopic, safeQuery, actualLimit);
+                logger.info("使用本地日志库，返回 {} 条日志", logEntries.size());
             }
             
             // 构建成功响应
@@ -200,6 +210,96 @@ public class QueryLogsTools {
             logger.error("查询日志失败", e);
             return buildErrorResponse("查询失败: " + e.getMessage());
         }
+    }
+
+    public QueryLogsTools(com.smartoncall.log.LogStore logStore) {
+        this.logStore = logStore;
+    }
+
+    /**
+     * 从本地日志库查询。
+     *
+     * <p>模型传的 query 有两种常见形态，都要支持：
+     * <ul>
+     *   <li>结构化：{@code service=order-service level=ERROR} —— 直接解析</li>
+     *   <li>自然语言：{@code error logs for order-service} —— 从中**识别**出服务名与级别</li>
+     * </ul>
+     * 只支持前者的话，模型用自然语言描述时就会静默返回 0 条，
+     * 看起来像"没有日志"，实际上是参数没被理解——这比报错更危险。
+     */
+    private List<LogEntry> fromLocalStore(String region, String logTopic, String query, int limit) {
+        String service = extractFilter(query, "service");
+        String level = extractFilter(query, "level");
+        String keyword = extractFilter(query, "keyword");
+
+        // 自然语言 query：从里面识别出已知的服务名与日志级别
+        if (service == null) {
+            service = matchKnownService(query);
+        }
+        if (level == null) {
+            level = matchKnownLevel(query);
+        }
+        // 既没有结构化关键词、也不是纯级别描述时，把整句当关键词做全文匹配
+        if (keyword == null && service == null && level == null
+                && query != null && !query.isBlank()) {
+            keyword = query.trim();
+        }
+
+        logger.info("本地日志库过滤条件: service={}, level={}, keyword={}", service, level, keyword);
+
+        List<LogEntry> entries = new ArrayList<>();
+        for (com.smartoncall.log.LogStore.LogEntry source : logStore.query(service, level, null, keyword, limit)) {
+            LogEntry entry = new LogEntry();
+            entry.setTimestamp(FORMATTER.format(java.time.Instant.ofEpochSecond(source.getTimestamp())));
+            entry.setLevel(source.getLevel());
+            entry.setService(source.getService());
+            entry.setInstance(region);
+            entry.setMessage(source.getMessage());
+            entries.add(entry);
+        }
+        return entries;
+    }
+
+    /** 从 query 里识别已知服务名 */
+    private String matchKnownService(String query) {
+        if (query == null) {
+            return null;
+        }
+        String lower = query.toLowerCase();
+        for (String candidate : logStore.knownServices()) {
+            if (lower.contains(candidate.toLowerCase())) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /** 从 query 里识别日志级别 */
+    private String matchKnownLevel(String query) {
+        if (query == null) {
+            return null;
+        }
+        String upper = query.toUpperCase();
+        for (String candidate : new String[]{"ERROR", "WARN", "INFO"}) {
+            if (upper.contains(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /** 从 {@code key=value} 形式的查询串里取一个过滤条件 */
+    private String extractFilter(String query, String key) {
+        if (query == null || query.isBlank()) {
+            return null;
+        }
+        for (String token : query.split("[\\s,]+")) {
+            String prefix = key + "=";
+            if (token.toLowerCase().startsWith(prefix)) {
+                return token.substring(prefix.length());
+            }
+        }
+        return null;
     }
 
     /**

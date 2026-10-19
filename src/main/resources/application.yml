@@ -83,6 +83,11 @@ prometheus:
   base-url: http://localhost:9090
   timeout: 10  # 超时时间（秒）
   mock-enabled: false  # 是否启用 Mock 模式（用于测试）
+  # 告警来源：
+  #   builtin    —— 用本系统的内置告警源（默认）。本地没有 Prometheus 时也能跑通，
+  #                 告警可以通过 POST /api/alerts 注入、DELETE 解除
+  #   prometheus —— 调用真实的 Prometheus /api/v1/alerts
+  source: builtin
 
 # CLS 云日志服务配置
 cls:
