@@ -59,3 +59,6 @@ questions_for_interview.docx
 .interview-questions.tmp.txt
 questions_for_interview_v2.md
 CHANGELOG-agent-hardening.md
+
+# macOS
+.DS_Store
